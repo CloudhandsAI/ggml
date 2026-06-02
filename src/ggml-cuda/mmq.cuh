@@ -456,6 +456,72 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
     }
 }
 
+#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)
+// Cloudhands int4-MMQ (RDNA4): pack 4 nibbles held one-per-byte (0x0a0b0c0d) into the low 16 bits (0/4/8/12).
+static __device__ __forceinline__ int mmq_compress_nibbles(const int x) {
+    return (x & 0xF) | ((x >> 4) & 0xF0) | ((x >> 8) & 0xF00) | ((x >> 12) & 0xF000);
+}
+
+// int4-MMQ weight load for Q4_0 on RDNA4: store RAW 4-bit nibbles (NO expand-to-int8 -8 offset),
+// packed 8 features per int32 in the tile<16,4,int> fragment layout the iu4 WMMA consumes.
+// Block b occupies x_qs cols [b*4 .. b*4+3]; col (b*4+cc) holds features 8*cc..8*cc+7:
+//   cc=0 -> low nibbles qs[0..7], cc=1 -> low qs[8..15], cc=2 -> high qs[0..7], cc=3 -> high qs[8..15].
+// The -8 Q4_0 offset is applied later in vec_dot via the precomputed q8_1 sum (s). Scale d stored as iu8.
+// Reuses the Q8_0 tile stride (uses only the first half); LDS-halving occupancy bonus is a follow-up.
+template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_q4_0_iu4(
+    const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
+    constexpr int nwarps    = mmq_get_nwarps_device();
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+
+    int   * x_qs = (int   *)  x_tile;
+    float * x_df = (float *) (x_qs + 2*MMQ_TILE_NE_K);
+
+    constexpr int blocks_per_iter = MMQ_ITER_K / QK4_0; // 8 blocks per row in the loaded tile
+
+    // One thread builds the 4 packed-nibble int32 of one (row i, block b).
+    constexpr int total = mmq_y * blocks_per_iter;
+#pragma unroll
+    for (int t0 = 0; t0 < total; t0 += nwarps*warp_size) {
+        const int t = t0 + threadIdx.y*warp_size + threadIdx.x;
+        if (t >= total) continue; // mmq_y*8 is a multiple of 256 for mmq_y in {64,128}
+
+        int i = t / blocks_per_iter;
+        const int b = t % blocks_per_iter;
+        if (need_check) i = min(i, i_max);
+
+        const block_q4_0 * bxi = (const block_q4_0 *) x + kbx0 + i*stride + b;
+        const int q0 = get_int_b2(bxi->qs, 0); // bytes  0.. 3
+        const int q1 = get_int_b2(bxi->qs, 1); // bytes  4.. 7
+        const int q2 = get_int_b2(bxi->qs, 2); // bytes  8..11
+        const int q3 = get_int_b2(bxi->qs, 3); // bytes 12..15
+
+        const int lo0 = (q0 >> 0) & 0x0F0F0F0F, hi0 = (q0 >> 4) & 0x0F0F0F0F;
+        const int lo1 = (q1 >> 0) & 0x0F0F0F0F, hi1 = (q1 >> 4) & 0x0F0F0F0F;
+        const int lo2 = (q2 >> 0) & 0x0F0F0F0F, hi2 = (q2 >> 4) & 0x0F0F0F0F;
+        const int lo3 = (q3 >> 0) & 0x0F0F0F0F, hi3 = (q3 >> 4) & 0x0F0F0F0F;
+
+        x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + b*4 + 0] = mmq_compress_nibbles(lo0) | (mmq_compress_nibbles(lo1) << 16);
+        x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + b*4 + 1] = mmq_compress_nibbles(lo2) | (mmq_compress_nibbles(lo3) << 16);
+        x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + b*4 + 2] = mmq_compress_nibbles(hi0) | (mmq_compress_nibbles(hi1) << 16);
+        x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + b*4 + 3] = mmq_compress_nibbles(hi2) | (mmq_compress_nibbles(hi3) << 16);
+    }
+
+    // Per-block scale d (identical layout to the iu8 load_tiles_q4_0 scale store).
+    constexpr int blocks_per_tile_x_row = MMQ_TILE_NE_K / QI4_0;
+    constexpr int rows_per_warp = warp_size / blocks_per_tile_x_row;
+    const int kbxd = threadIdx.x % blocks_per_tile_x_row;
+
+#pragma unroll
+    for (int i0 = 0; i0 < mmq_y; i0 += nwarps * rows_per_warp) {
+        int i = i0 + threadIdx.y * rows_per_warp + threadIdx.x / blocks_per_tile_x_row;
+        if (need_check) i = min(i, i_max);
+
+        const block_q4_0 * bxi = (const block_q4_0 *) x + kbx0 + i*stride + kbxd;
+        x_df[i*MMQ_MMA_TILE_X_K_Q8_0 + kbxd] = bxi->d;
+    }
+}
+#endif // defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)
+
 template <int mmq_x, int mmq_y>
 static __device__ __forceinline__ void vec_dot_q4_0_q8_1_dp4a(
     const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00) {
@@ -1291,6 +1357,83 @@ static __device__ __forceinline__ void vec_dot_q8_0_q8_1_mma(
         }
     }
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+}
+
+// Cloudhands int4-MMQ vec_dot for Q4_0 on RDNA4. Raw-nibble weights (A) x int8 activation split
+// into hi (signed-4) / lo (unsigned-4) nibbles (B), two iu4 WMMA ops combined 16*hi+lo == sum(nibble*q_a).
+// Scale/offset is ggml's exact Q4_0 formula d_w*(d_a*sumi - 8*s_a), s_a = q8_1 sum field (DS4 layout).
+// Per-tile arithmetic validated end-to-end on the R9700: cube abtest/mmq_q4_iu4.hip (0/256).
+template <int mmq_x, int mmq_y>
+static __device__ __forceinline__ void vec_dot_q4_0_q8_1_iu4(
+    const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00) {
+#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)
+    constexpr data_layout input_layout = get_input_data_layout(); // I_MAJOR on RDNA4
+    typedef tile<16,  4, int, input_layout>        tile_A;        // raw-nibble weight, K=32
+    typedef tile<16,  8, int, input_layout>        tile_Bi8;      // int8 activation as loaded
+    typedef tile<16,  4, int, input_layout>        tile_B;        // hi/lo activation nibbles
+    typedef tile<16, 16, int, DATA_LAYOUT_J_MAJOR> tile_C;
+
+    constexpr int granularity   = mmq_get_granularity_device(mmq_x);
+    constexpr int rows_per_warp = granularity;
+    constexpr int ntx           = rows_per_warp/tile_C::I;
+
+    y += (threadIdx.y % ntx) * (tile_C::J*MMQ_TILE_Y_K);
+
+    const int   * x_qs = (const int   *) x;
+    const float * x_df = (const float *) x_qs + 2*MMQ_TILE_NE_K;
+    const int   * y_qs = (const int   *) y + 4;
+    const half2 * y_ds = (const half2 *) y;
+
+    const int i0 = (threadIdx.y / ntx) * rows_per_warp;
+
+    for (int k01 = 0; k01 < MMQ_TILE_NE_K; k01 += QI8_0) { // one 32-feature block per step
+        const int k0  = k00 + k01;
+        const int blk = k0 / QI8_0;                        // absolute block index in the loaded tile
+
+        tile_A A[ntx];
+#pragma unroll
+        for (int n = 0; n < ntx; ++n) {
+            load_ldmatrix(A[n], x_qs + (i0 + n*tile_A::I)*MMQ_MMA_TILE_X_K_Q8_0 + blk*QI4_0, MMQ_MMA_TILE_X_K_Q8_0);
+        }
+
+#pragma unroll
+        for (int j0 = 0; j0 < mmq_x; j0 += ntx*tile_C::J) {
+            tile_Bi8 Bi8;
+            load_ldmatrix(Bi8, y_qs + j0*MMQ_TILE_Y_K + k01, MMQ_TILE_Y_K);
+
+            tile_B Bhi, Blo; // zero-initialized by tile ctor
+#pragma unroll
+            for (int kk = 0; kk < 16; ++kk) {
+                const int byte = (Bi8.x[kk/4] >> (8*(kk%4))) & 0xFF;
+                Bhi.x[kk/8] |= ((byte >> 4) & 0xF) << (4*(kk%8)); // hi nibble -> signed-4
+                Blo.x[kk/8] |= ( byte       & 0xF) << (4*(kk%8)); // lo nibble -> unsigned-4
+            }
+
+            const int   j   = j0 + tile_C::get_j(0); // activation column n (constant across l for the lane)
+            const half2 ds  = y_ds[j*MMQ_TILE_Y_K + k01/QI8_1];
+            const float d_a = __low2float(ds);
+            const float s_a = __high2float(ds);
+
+#pragma unroll
+            for (int n = 0; n < ntx; ++n) {
+                tile_C Chi, Clo;
+                mma_iu4<true >(Chi, A[n], Bhi);
+                mma_iu4<false>(Clo, A[n], Blo);
+
+#pragma unroll
+                for (int l = 0; l < tile_C::ne; ++l) {
+                    const int   i    = i0 + n*tile_A::I + tile_C::get_i(l);
+                    const float d_w  = x_df[i*MMQ_MMA_TILE_X_K_Q8_0 + blk];
+                    const int   sumi = 16*Chi.x[l] + Clo.x[l];
+                    sum[(j0/tile_C::J + n)*tile_C::ne + l] += d_w * (d_a*sumi - 8.0f*s_a);
+                }
+            }
+        }
+    }
+#else
+    GGML_UNUSED_VARS(x, y, sum, k00);
+    NO_DEVICE_CODE;
+#endif // defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)
 }
 
 
@@ -3276,8 +3419,15 @@ struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q1_0> {
 template <int mmq_x, int mmq_y, bool need_check>
 struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q4_0> {
     static constexpr int              vdr          = VDR_Q4_0_Q8_1_MMQ;
+#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)
+    // Cloudhands int4-MMQ: raw-nibble weights feed the iu4 WMMA, killing the per-step
+    // 4->8 dequant-expand VALU brake. RDNA4-only; all other archs keep the iu8 path.
+    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_q4_0_iu4<mmq_y, need_check>;
+    static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q4_0_q8_1_iu4<mmq_x, mmq_y>;
+#else
     static constexpr load_tiles_mmq_t load_tiles   = load_tiles_q4_0<mmq_y, need_check>;
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_DS4>;
+#endif // defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q4_0_q8_1_dp4a<mmq_x, mmq_y>;
 };
 
