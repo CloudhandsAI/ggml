@@ -1336,6 +1336,29 @@ namespace ggml_cuda_mma {
 #endif // AMD_MFMA_AVAILABLE
     }
 
+    // Cloudhands int4-MMQ (RDNA4): D[16x16] += A[16x32 i4] * B[16x32 i4] over K=32 in ONE op.
+    // A/B hold raw 4-bit codes (8 per int; tile<16,4,int> -> ne=2 -> int32x2). The int4-MMQ
+    // vec_dot calls this TWICE (hi/lo halves of the int8 activation) and combines 16*hi+lo,
+    // so raw 4-bit weights feed the matrix core with no expand-to-int8 (the dequant brake).
+    // A is always unsigned (raw Q4_0 nibble); b_signed selects the activation-split half
+    // (hi nibble -> signed [-8,7], lo nibble -> unsigned [0,15]). C tile is J-major on RDNA4,
+    // matching the iu8 path's tile_C so write_back is shared. Validated: cube abtest/wmma_vecdot.hip.
+    template <bool b_signed, data_layout dl_d, data_layout dl_ab>
+    static __device__ __forceinline__ void mma_iu4(
+            tile<16, 16, int, dl_d> & D, const tile<16, 4, int, dl_ab> & A, const tile<16, 4, int, dl_ab> & B) {
+#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)
+        using int32x8_t = __attribute__((__vector_size__(8 * sizeof(int)))) int;
+        using int32x2_t = __attribute__((__vector_size__(2 * sizeof(int)))) int;
+        int32x8_t * acc   = (int32x8_t *) D.x;
+        int32x2_t * a_vec = (int32x2_t *) A.x;
+        int32x2_t * b_vec = (int32x2_t *) B.x;
+        acc[0] = __builtin_amdgcn_wmma_i32_16x16x32_iu4_w32_gfx12(false, a_vec[0], b_signed, b_vec[0], acc[0], false);
+#else
+        GGML_UNUSED_VARS(D, A, B);
+        NO_DEVICE_CODE;
+#endif
+    }
+
     static __device__ __forceinline__ void mma(
             tile<32, 32, int> & D, const tile<32, 4, int> & A, const tile<32, 4, int> & B) {
 #if defined(AMD_MFMA_AVAILABLE)
