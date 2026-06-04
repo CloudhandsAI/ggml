@@ -40,7 +40,7 @@ if "GL_GOOGLE_include_directive" not in src:
 tmp = tempfile.NamedTemporaryFile("w", suffix=".comp", delete=False, dir=os.path.dirname(out) or ".")
 tmp.write(src); tmp.close()
 
-cmd = [GLSLANG, "-V", "--target-env", target, "-S", "comp", "-o", out, tmp.name] + passthru
+cmd = [GLSLANG, "-V", "--target-env", target, "-I" + (os.path.dirname(inp) or "."), "-S", "comp", "-o", out, tmp.name] + passthru
 r = subprocess.run(cmd, capture_output=True, text=True)
 os.unlink(tmp.name)
 if depf and out and inp:
