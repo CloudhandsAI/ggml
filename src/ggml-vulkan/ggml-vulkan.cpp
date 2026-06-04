@@ -4050,9 +4050,11 @@ static void ggml_vk_load_shaders(vk_device& device) {
         CREATE_MM(GGML_TYPE_F32, pipeline_matmul_f32_f16, matmul_f32_f16, , wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
         CREATE_MM2(GGML_TYPE_F16, pipeline_matmul_f16, matmul_f16, wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
         CREATE_MM2(GGML_TYPE_F16, pipeline_matmul_f16_f32, matmul_f16_f32, wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
-        // fp8 e4m3 (native fp8 weights + f16 activation, fp8 coopmat WMMA, f32 acc) — RDNA4 only
+        // scaled e4m3 (block quant, dequant->f16 in shared, f16 coopmat, f32 acc) — RDNA4 only.
+        // Uses the mmq warptile/wg_denoms so the BK spec-constant = 32 (block size); the f16
+        // `warptile` leaves BK at the default 16 (f16 hard-codes BK=32 at compile time) -> NaN.
         if (device->architecture == vk_device_architecture::AMD_RDNA4) {
-            CREATE_MM(GGML_TYPE_E4M3, pipeline_dequant_mul_mat_mat_f16[GGML_TYPE_E4M3].f32acc, matmul_e4m3, , wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
+            CREATE_MM(GGML_TYPE_E4M3, pipeline_dequant_mul_mat_mat_f16[GGML_TYPE_E4M3].f32acc, matmul_e4m3, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, );
         }
 #if defined(GGML_VULKAN_BFLOAT16_GLSLC_SUPPORT)
         if (device->coopmat_bf16_support) {

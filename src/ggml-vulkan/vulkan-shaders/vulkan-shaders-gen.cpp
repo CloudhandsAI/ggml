@@ -533,9 +533,11 @@ void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool c
     // f16 coopmat WMMA, f32 acc. Correctness-first checkpoint (half-VRAM weights). The native-fp8
     // compute variant (fp8 coopmat + per-row epilogue scale) layers on top once this is validated.
     if (coopmat && !f16acc && shader_name == "matmul") {
-        // LOAD_VEC_A=4 matches the q8_0 block addressing the e4m3 load mirrors (idx/8, 4 vals/idx).
-        string_to_spv(shader_name + "_e4m3",         source_name, merge_maps(merge_maps(base_dict, float_type_dict_f16), {{"DATA_A_E4M3", "1"}, {"LOAD_VEC_A", "4"},                          {"B_TYPE", "float16_t"},        {"D_TYPE", "float"}}), fp16, coopmat, coopmat2, f16acc);
-        string_to_spv(shader_name + "_e4m3_aligned", source_name, merge_maps(merge_maps(base_dict, float_type_dict_f16), {{"DATA_A_E4M3", "1"}, {"LOAD_VEC_A", "4"}, {"LOAD_VEC_B", load_vec}, {"B_TYPE", aligned_b_type_f16}, {"D_TYPE", "float"}, {"ALIGNED", "1"}}), fp16, coopmat, coopmat2, f16acc);
+        // B_TYPE=float: the mm dispatch keeps f32 src1 (y_f32_kernel) for quant src0, so the shader
+        // must consume f32 activations directly (a f16-B shader fed f32 bytes -> NaN). LOAD_VEC_A=4
+        // matches the q8_0 block addressing the e4m3 load mirrors (idx/8, 4 vals/idx).
+        string_to_spv(shader_name + "_e4m3",         source_name, merge_maps(merge_maps(base_dict, float_type_dict_f16), {{"DATA_A_E4M3", "1"}, {"LOAD_VEC_A", "4"},                          {"B_TYPE", "float"},            {"D_TYPE", "float"}}), fp16, coopmat, coopmat2, f16acc);
+        string_to_spv(shader_name + "_e4m3_aligned", source_name, merge_maps(merge_maps(base_dict, float_type_dict_f16), {{"DATA_A_E4M3", "1"}, {"LOAD_VEC_A", "4"}, {"LOAD_VEC_B", load_vec}, {"B_TYPE", aligned_b_type_f32}, {"D_TYPE", "float"}, {"ALIGNED", "1"}}), fp16, coopmat, coopmat2, f16acc);
     }
 
     // bf16
