@@ -149,22 +149,15 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
             buf_a[buf_idx    ] = FLOAT_TYPEV2(v.xy);
             buf_a[buf_idx + 1] = FLOAT_TYPEV2(v.zw);
 #elif defined(DATA_A_E4M3)
+            // PHASE 1a: load 4 raw fp8 quants/idx into shared (fp8 WMMA). No scale (green); 1b adds d.
             const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
             const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;
 
-            const uint ib = idx / 8;
-            const uint iqs = idx & 0x07;
+            const uint ib  = idx / 8;
+            const uint iqs = (idx & 0x07) * 4;   // 0,4,8,...,28 within the 32-quant block
 
-            const float d = float(data_a_packed16[ib].d);
-            const uint w0 = uint(data_a_packed16[ib].qs[2*iqs]);
-            const uint w1 = uint(data_a_packed16[ib].qs[2*iqs + 1]);
-            const vec4 v = vec4(e4m3_decode( w0        & 0xFFu),
-                                e4m3_decode((w0 >> 8)  & 0xFFu),
-                                e4m3_decode( w1        & 0xFFu),
-                                e4m3_decode((w1 >> 8)  & 0xFFu)) * d;
-
-            buf_a[buf_idx    ] = FLOAT_TYPEV2(v.xy);
-            buf_a[buf_idx + 1] = FLOAT_TYPEV2(v.zw);
+            buf_a[buf_idx    ] = FLOAT_TYPEV2(data_a[ib].qs[iqs + 0], data_a[ib].qs[iqs + 1]);
+            buf_a[buf_idx + 1] = FLOAT_TYPEV2(data_a[ib].qs[iqs + 2], data_a[ib].qs[iqs + 3]);
 #elif defined(DATA_A_Q1_0)
             const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
             const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;

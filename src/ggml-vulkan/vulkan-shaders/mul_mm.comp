@@ -4,6 +4,7 @@
 #extension GL_EXT_shader_16bit_storage : require
 
 #ifdef DATA_A_E4M3
+#extension GL_EXT_float_e4m3 : require
 #extension GL_EXT_shader_8bit_storage : require
 #endif
 
