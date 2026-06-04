@@ -1,5 +1,5 @@
 void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uint idx_m, const uint block, const uint end_k) {
-#if defined(DATA_A_F32) || defined(DATA_A_F16)
+#if defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_E4M3)
 #if LOAD_VEC_A == 8
             const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
             const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;

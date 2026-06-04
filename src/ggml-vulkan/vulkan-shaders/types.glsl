@@ -34,6 +34,19 @@
 #define A_TYPE_PACKED32 f16vec2
 #endif
 
+#if defined(DATA_A_E4M3)
+#define QUANT_K 1
+#define QUANT_R 1
+
+#if LOAD_VEC_A == 4
+#define A_TYPE fe4m3vec4
+#elif LOAD_VEC_A == 8
+#error unsupported
+#else
+#define A_TYPE floate4m3_t
+#endif
+#endif
+
 #if defined(DATA_A_BF16)
 #define QUANT_K 1
 #define QUANT_R 1
