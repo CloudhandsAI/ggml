@@ -1,0 +1,83 @@
+--- /mnt/cache/appdata/cloudhands/ggml-pr/src/ggml-vulkan/vulkan-shaders/mul_mm.comp	2026-06-02 13:51:33.587333729 -0700
++++ /mnt/cache/appdata/cloudhands/wk/mul_mm.comp	2026-06-03 18:36:47.366047292 -0700
+@@ -1,4 +1,7 @@
+ #version 450
++#extension GL_GOOGLE_include_directive : require
++#extension GL_EXT_float_e4m3 : require
++#extension GL_EXT_shader_8bit_storage : require
+ 
+ #extension GL_EXT_control_flow_attributes : enable
+ #extension GL_EXT_shader_16bit_storage : require
+@@ -38,7 +41,7 @@
+ #endif
+ 
+ // Load 2 values at once without affecting index calculations through LOAD_VEC
+-#if (defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_BF16)) && !defined(ALIGNED)
++#if (defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_E4M3) || defined(DATA_A_BF16)) && !defined(ALIGNED)
+ #define LOAD_VEC_BATCH_A 2
+ #else
+ #define LOAD_VEC_BATCH_A 1
+@@ -111,7 +114,7 @@
+ layout (constant_id = 9) const uint TK = 1;  // Only needed for coopmat
+ layout (constant_id = 10) const uint WARP = 32;
+ 
+-#if defined(DATA_A_F32) || defined(DATA_A_F16)
++#if defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_E4M3)
+ #define BK 32
+ #define BK_STEP 4
+ #else
+@@ -259,7 +262,7 @@
+     }
+ #else
+     ACC_TYPEV2 sums[WMITER * TM * WNITER * TN/2];
+-#if defined(DATA_A_F32) || defined(DATA_A_F16)
++#if defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_E4M3)
+     FLOAT_TYPEV4 cache_a[WMITER * TM];
+     FLOAT_TYPEV4 cache_b;
+ #else
+@@ -307,7 +310,7 @@
+             // Load from shared into cache
+             [[unroll]] for (uint wsir = 0; wsir < WMITER; wsir++) {
+                 [[unroll]] for (uint j = 0; j < TM; j++) {
+-                #if defined(DATA_A_F32) || defined(DATA_A_F16)
++                #if defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_E4M3)
+                     cache_a[wsir * TM + j].xy = buf_a[(warp_r * WM + wsir * WSUBM + tiwr * TM + j) * SHMEM_STRIDE + 2 * i    ];
+                     cache_a[wsir * TM + j].zw = buf_a[(warp_r * WM + wsir * WSUBM + tiwr * TM + j) * SHMEM_STRIDE + 2 * i + 1];
+                 #else
+@@ -318,7 +321,7 @@
+ 
+             [[unroll]] for (uint wsic = 0; wsic < WNITER; wsic++) {
+                 [[unroll]] for (uint cc = 0; cc < TN; cc++) {
+-                #if defined(DATA_A_F32) || defined(DATA_A_F16)
++                #if defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_E4M3)
+                     cache_b.xy = buf_b[(warp_c * WN + wsic * WSUBN + tiwc * TN + cc) * SHMEM_STRIDE + 2 * i    ];
+                     cache_b.zw = buf_b[(warp_c * WN + wsic * WSUBN + tiwc * TN + cc) * SHMEM_STRIDE + 2 * i + 1];
+                 #else
+@@ -329,7 +332,7 @@
+                         [[unroll]] for (uint cr = 0; cr < TM / 2; cr++) {
+                             // [WNITER][TN][WMITER][TM / 2] -> [wsic][cc][wsir][cr]
+                             const uint sums_idx = (wsic * TN + cc) * WMITER * (TM / 2) + wsir * (TM / 2) + cr;
+-                        #if defined(DATA_A_F32) || defined(DATA_A_F16)
++                        #if defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_E4M3)
+                             sums[sums_idx].x = fma(ACC_TYPE(cache_a[wsir * TM + 2 * cr    ].x), ACC_TYPE(cache_b.x), fma(ACC_TYPE(cache_a[wsir * TM + 2 * cr    ].y), ACC_TYPE(cache_b.y),
+                                                fma(ACC_TYPE(cache_a[wsir * TM + 2 * cr    ].z), ACC_TYPE(cache_b.z), fma(ACC_TYPE(cache_a[wsir * TM + 2 * cr    ].w), ACC_TYPE(cache_b.w), sums[sums_idx].x))));
+                             sums[sums_idx].y = fma(ACC_TYPE(cache_a[wsir * TM + 2 * cr + 1].x), ACC_TYPE(cache_b.x), fma(ACC_TYPE(cache_a[wsir * TM + 2 * cr + 1].y), ACC_TYPE(cache_b.y),
+--- /mnt/cache/appdata/cloudhands/ggml-pr/src/ggml-vulkan/vulkan-shaders/mul_mm_funcs.glsl	2026-06-02 13:51:33.587333729 -0700
++++ /mnt/cache/appdata/cloudhands/wk/mul_mm_funcs.glsl	2026-06-03 18:36:47.366780115 -0700
+@@ -1,5 +1,5 @@
+ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uint idx_m, const uint block, const uint end_k) {
+-#if defined(DATA_A_F32) || defined(DATA_A_F16)
++#if defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_E4M3)
+ #if LOAD_VEC_A == 8
+             const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+             const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;
+--- /mnt/cache/appdata/cloudhands/ggml-pr/src/ggml-vulkan/vulkan-shaders/types.glsl	2026-06-02 13:51:33.591333906 -0700
++++ /mnt/cache/appdata/cloudhands/wk/types.glsl	2026-06-03 18:36:47.366780115 -0700
+@@ -1853,3 +1853,7 @@
+ #endif
+ 
+ #endif // !defined(GGML_TYPES_COMP)
++
++#ifdef DATA_A_E4M3
++#define A_TYPE floate4m3_t
++#endif

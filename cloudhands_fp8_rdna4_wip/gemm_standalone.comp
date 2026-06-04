@@ -1,0 +1,64 @@
+#version 450
+#extension GL_KHR_cooperative_matrix : enable
+#extension GL_KHR_memory_scope_semantics : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_control_flow_attributes : enable
+#ifdef FP8
+#extension GL_EXT_float_e4m3 : require
+#extension GL_EXT_shader_8bit_storage : require
+#define AB_T floate4m3_t
+#else
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#define AB_T float16_t
+#endif
+
+// Double-buffered multi-warp coopmat GEMM. 128 threads = 4 subgroups (wave32).
+// Workgroup -> 64x64 C tile; each subgroup -> 32x32 (2x2 frags). BK=16, 2 shared buffers.
+layout(local_size_x=128, local_size_y=1, local_size_z=1) in;
+layout(constant_id=0) const uint M=4096u;
+layout(constant_id=1) const uint N=512u;
+layout(constant_id=2) const uint K=14336u;
+
+layout(binding=0) readonly buffer Abuf { AB_T A[]; };
+layout(binding=1) readonly buffer Bbuf { AB_T B[]; };
+layout(binding=2) writeonly buffer Cbuf { float C[]; };
+
+const uint BM=64u, BN=64u, BK=16u;
+shared AB_T As[2][BM*BK];
+shared AB_T Bs[2][BK*BN];
+
+void main(){
+  uint tr = gl_WorkGroupID.y*BM;
+  uint tc = gl_WorkGroupID.x*BN;
+  uint sg = gl_SubgroupID;
+  uint subRow = (sg/2u)*32u;
+  uint subCol = (sg%2u)*32u;
+  uint lx = gl_LocalInvocationID.x;
+  coopmat<float, gl_ScopeSubgroup,16,16,gl_MatrixUseAccumulator> acc[4];
+  [[unroll]] for(uint i=0u;i<4u;i++) acc[i]=coopmat<float, gl_ScopeSubgroup,16,16,gl_MatrixUseAccumulator>(0.0);
+
+  uint nT = K/BK;
+  // prologue: load tile 0 into buffer 0
+  for (uint i=lx; i<BM*BK; i+=128u){ uint r=i/BK, c=i%BK; As[0][i]=A[(tr+r)*K+(0u+c)]; }
+  for (uint i=lx; i<BK*BN; i+=128u){ uint r=i/BN, c=i%BN; Bs[0][i]=B[(0u+r)*N+(tc+c)]; }
+  barrier();
+
+  for (uint t=0u; t<nT; t++){
+    uint cur = t & 1u;
+    uint nxt = (t+1u) & 1u;
+    uint k0n = (t+1u)*BK;
+    if (t+1u < nT){
+      for (uint i=lx; i<BM*BK; i+=128u){ uint r=i/BK, c=i%BK; As[nxt][i]=A[(tr+r)*K+(k0n+c)]; }
+      for (uint i=lx; i<BK*BN; i+=128u){ uint r=i/BN, c=i%BN; Bs[nxt][i]=B[(k0n+r)*N+(tc+c)]; }
+    }
+    coopmat<AB_T, gl_ScopeSubgroup,16,16,gl_MatrixUseA> a[2];
+    coopmat<AB_T, gl_ScopeSubgroup,16,16,gl_MatrixUseB> b[2];
+    [[unroll]] for(uint r=0u;r<2u;r++) coopMatLoad(a[r], As[cur], (subRow+r*16u)*BK, BK, gl_CooperativeMatrixLayoutRowMajor);
+    [[unroll]] for(uint c=0u;c<2u;c++) coopMatLoad(b[c], Bs[cur], (subCol+c*16u),     BN, gl_CooperativeMatrixLayoutRowMajor);
+    [[unroll]] for(uint r=0u;r<2u;r++) [[unroll]] for(uint c=0u;c<2u;c++) acc[r*2u+c]=coopMatMulAdd(a[r],b[c],acc[r*2u+c]);
+    barrier();
+  }
+  [[unroll]] for(uint r=0u;r<2u;r++) [[unroll]] for(uint c=0u;c<2u;c++)
+    coopMatStore(acc[r*2u+c], C, (tr+subRow+r*16u)*N+(tc+subCol+c*16u), N, gl_CooperativeMatrixLayoutRowMajor);
+}
