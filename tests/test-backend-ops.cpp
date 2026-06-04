@@ -84,7 +84,7 @@ static void init_tensor_uniform(ggml_tensor * tensor, float min = -1.0f, float m
 
     if (tensor->type == GGML_TYPE_F32 || tensor->type == GGML_TYPE_I32) {
         ggml_backend_tensor_set(tensor, data.data(), 0, nels * sizeof(float));
-    } else if (ggml_is_quantized(tensor->type) || tensor->type == GGML_TYPE_F16 || tensor->type == GGML_TYPE_BF16) {
+    } else if (ggml_is_quantized(tensor->type) || tensor->type == GGML_TYPE_F16 || tensor->type == GGML_TYPE_BF16 || tensor->type == GGML_TYPE_E4M3) {
         GGML_ASSERT(nels % ggml_blck_size(tensor->type) == 0);
 
          // dummy importance matrix
@@ -253,7 +253,7 @@ static std::vector<float> tensor_to_float(const ggml_tensor * t) {
                         tv.push_back((float)*(int16_t *) &buf[i]);
                     } else if (t->type == GGML_TYPE_I8) {
                         tv.push_back((float)*(int8_t *) &buf[i]);
-                    } else if (quantized) {
+                    } else if (quantized || t->type == GGML_TYPE_E4M3) {
                         tt->to_float(&buf[i], vq.data(), bs);
                         tv.insert(tv.end(), vq.begin(), vq.end());
                     } else {
