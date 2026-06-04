@@ -508,6 +508,37 @@ void dequantize_row_q8_0(const block_q8_0 * GGML_RESTRICT x, float * GGML_RESTRI
     }
 }
 
+void quantize_row_e4m3_ref(const float * GGML_RESTRICT x, block_e4m3 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_E4M3 == 0);
+    const int nb = k / QK_E4M3;
+
+    for (int i = 0; i < nb; i++) {
+        float amax = 0.0f;
+        for (int j = 0; j < QK_E4M3; j++) {
+            amax = MAX(amax, fabsf(x[i*QK_E4M3 + j]));
+        }
+        const float d  = amax / 448.0f;          // e4m3 max finite = 448
+        const float id = d ? 1.0f/d : 0.0f;
+        y[i].d = GGML_FP32_TO_FP16(d);
+        for (int j = 0; j < QK_E4M3; ++j) {
+            y[i].qs[j] = ggml_fp32_to_e4m3(x[i*QK_E4M3 + j] * id);
+        }
+    }
+}
+
+void dequantize_row_e4m3(const block_e4m3 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK_E4M3;
+    assert(k % qk == 0);
+    const int nb = k / qk;
+
+    for (int i = 0; i < nb; i++) {
+        const float d = GGML_FP16_TO_FP32(x[i].d);
+        for (int j = 0; j < qk; ++j) {
+            y[i*qk + j] = ggml_e4m3_to_fp32(x[i].qs[j]) * d;
+        }
+    }
+}
+
 void dequantize_row_mxfp4(const block_mxfp4 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     static const int qk = QK_MXFP4;
 
