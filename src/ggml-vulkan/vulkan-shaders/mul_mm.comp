@@ -137,6 +137,9 @@ shared FLOAT_TYPEV2 buf_b[BN * SHMEM_STRIDE];
 
 #ifdef COOPMAT
 shared ACC_TYPE coopmat_stage[TM * TN * NUM_WARPS];
+#ifdef DATA_A_E4M3
+shared float d_w_sh[BM];   // per-row weight scales, loaded once for the epilogue (#3 optimize)
+#endif
 #endif
 
 #include "mul_mm_id_funcs.glsl"
@@ -354,6 +357,15 @@ void main() {
         barrier();
     }
 
+#if defined(COOPMAT) && defined(DATA_A_E4M3)
+    // #3 optimize: load per-row weight scales d_w once into shared (was a per-element data_a read).
+    for (uint lr = gl_LocalInvocationID.x; lr < BM; lr += gl_WorkGroupSize.x) {
+        const uint gr = ir * BM + lr;
+        d_w_sh[lr] = (gr < p.M) ? float(data_a[batch_idx_a * (p.batch_stride_a / QUANT_K) + gr * (p.stride_a / QUANT_K)].d) : 0.0;
+    }
+    barrier();
+#endif
+
 #if defined(ACC_TYPE_MAX)
 #ifdef COOPMAT
     [[unroll]] for (uint j = 0; j < cms_per_row * cms_per_col; j++) {
@@ -401,7 +413,7 @@ void main() {
 #ifdef DATA_A_E4M3
     // #3 phase 1b: apply the per-row weight scale d_w in the epilogue. block_e4m3 is per-row quantized
     // (all blocks in a row share d), so row wr's scale = block 0 of row wr = data_a[wr*blocks_per_row].d.
-    #define E4M3_DW(wr) (float(data_a[batch_idx_a * (p.batch_stride_a / QUANT_K) + (wr) * (p.stride_a / QUANT_K)].d))
+    #define E4M3_DW(wr) (d_w_sh[(wr) - ir * BM])
     const bool e4m3_use_direct = false;   // must use the staged path to scale per output element
 #else
     #define E4M3_DW(wr) (1.0)
