@@ -539,8 +539,10 @@ void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool c
             {"FLOAT_TYPEV4", "fe4m3vec4"},
             {"FLOAT_TYPEV8", "fe4m3vec4"},   // unused (no 8-wide fp8)
         };
-        string_to_spv(shader_name + "_e4m3",         source_name, merge_maps(merge_maps(base_dict, float_type_dict_e4m3), {{"DATA_A_E4M3", "1"}, {"LOAD_VEC_A", "4"},                          {"B_TYPE", "float"},            {"D_TYPE", "float"}}), fp16, coopmat, coopmat2, f16acc);
-        string_to_spv(shader_name + "_e4m3_aligned", source_name, merge_maps(merge_maps(base_dict, float_type_dict_e4m3), {{"DATA_A_E4M3", "1"}, {"LOAD_VEC_A", "4"}, {"LOAD_VEC_B", load_vec}, {"B_TYPE", aligned_b_type_f32}, {"D_TYPE", "float"}, {"ALIGNED", "1"}}), fp16, coopmat, coopmat2, f16acc);
+        // fp8 has no 8-wide vec type, so the aligned variant must use LOAD_VEC_B=4 + a 4-wide B
+        // (vec4) — the f16 path's LOAD_VEC=8/mat2x4 hits an out-of-range swizzle on fe4m3vec4.
+        string_to_spv(shader_name + "_e4m3",         source_name, merge_maps(merge_maps(base_dict, float_type_dict_e4m3), {{"DATA_A_E4M3", "1"}, {"LOAD_VEC_A", "4"},                       {"B_TYPE", "float"}, {"D_TYPE", "float"}}), fp16, coopmat, coopmat2, f16acc);
+        string_to_spv(shader_name + "_e4m3_aligned", source_name, merge_maps(merge_maps(base_dict, float_type_dict_e4m3), {{"DATA_A_E4M3", "1"}, {"LOAD_VEC_A", "4"}, {"LOAD_VEC_B", "4"}, {"B_TYPE", "vec4"}, {"D_TYPE", "float"}, {"ALIGNED", "1"}}), fp16, coopmat, coopmat2, f16acc);
     }
 
     // bf16

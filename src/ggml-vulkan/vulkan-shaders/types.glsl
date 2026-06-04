@@ -36,12 +36,14 @@
 
 // scaled e4m3: per-block fp16 scale `d` + 32 native fp8 (e4m3) quants. Same 34 bytes as block_q8_0.
 // PHASE 1a: load reads qs as raw floate4m3_t into shared (fp8 WMMA); d is applied per-block in 1b.
+// Struct must be INSIDE the DATA_A_E4M3 guard — floate4m3_t needs GL_EXT_float_e4m3, which only the
+// e4m3 shaders enable (defining it unconditionally breaks every other shader's parse).
+#if defined(DATA_A_E4M3)
 struct block_e4m3
 {
     float16_t   d;
     floate4m3_t qs[32];
 };
-#if defined(DATA_A_E4M3)
 #define QUANT_K 32
 #define QUANT_R 1
 #define A_TYPE block_e4m3
