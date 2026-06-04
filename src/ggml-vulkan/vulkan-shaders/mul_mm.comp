@@ -4,7 +4,6 @@
 #extension GL_EXT_shader_16bit_storage : require
 
 #ifdef DATA_A_E4M3
-#extension GL_EXT_float_e4m3 : require
 #extension GL_EXT_shader_8bit_storage : require
 #endif
 
@@ -43,7 +42,7 @@
 #endif
 
 // Load 2 values at once without affecting index calculations through LOAD_VEC
-#if (defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_E4M3) || defined(DATA_A_BF16)) && !defined(ALIGNED)
+#if (defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_BF16)) && !defined(ALIGNED)
 #define LOAD_VEC_BATCH_A 2
 #else
 #define LOAD_VEC_BATCH_A 1
@@ -116,7 +115,7 @@ layout (constant_id = 8) const uint TN = 2;
 layout (constant_id = 9) const uint TK = 1;  // Only needed for coopmat
 layout (constant_id = 10) const uint WARP = 32;
 
-#if defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_E4M3)
+#if defined(DATA_A_F32) || defined(DATA_A_F16)
 #define BK 32
 #define BK_STEP 4
 #else

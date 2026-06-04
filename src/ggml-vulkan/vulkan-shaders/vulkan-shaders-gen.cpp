@@ -529,17 +529,13 @@ void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool c
     string_to_spv(shader_name + "_f16",             source_name, merge_maps(merge_maps(base_dict, float_type_dict_f16), {{"DATA_A_F16", "1"},                                                     {"B_TYPE", "float16_t"},        {"D_TYPE", "float"}}), fp16, coopmat, coopmat2, f16acc);
     string_to_spv(shader_name + "_f16_aligned",     source_name, merge_maps(merge_maps(base_dict, float_type_dict_f16), {{"DATA_A_F16", "1"}, {"LOAD_VEC_A", load_vec}, {"LOAD_VEC_B", load_vec}, {"B_TYPE", aligned_b_type_f16}, {"D_TYPE", "float"}, {"ALIGNED", "1"}}), fp16, coopmat, coopmat2, f16acc);
 
-    // fp8 e4m3: native fp8 weights + f16 activation (converted in-staging) + fp8 coopmat WMMA, f32 acc.
-    // Coopmat-only (RDNA4 fp8 WMMA), plain matmul, f32-acc only. ~2x f16 on RDNA4 (measured).
+    // scaled block_e4m3 (QUANT_K=32 like q8_0, but fp8 quants): dequantize qs*d -> f16 in shared,
+    // f16 coopmat WMMA, f32 acc. Correctness-first checkpoint (half-VRAM weights). The native-fp8
+    // compute variant (fp8 coopmat + per-row epilogue scale) layers on top once this is validated.
     if (coopmat && !f16acc && shader_name == "matmul") {
-        const std::map<std::string, std::string> float_type_dict_e4m3 = {
-            {"FLOAT_TYPE",   "floate4m3_t"},
-            {"FLOAT_TYPEV2", "fe4m3vec2"},
-            {"FLOAT_TYPEV4", "fe4m3vec4"},
-            {"FLOAT_TYPEV8", "fe4m3vec4"},   // unused (no 8-wide fp8); aligned path uses LOAD_VEC=4
-        };
-        string_to_spv(shader_name + "_e4m3",         source_name, merge_maps(merge_maps(base_dict, float_type_dict_e4m3), {{"DATA_A_E4M3", "1"},                                                      {"B_TYPE", "float16_t"}, {"D_TYPE", "float"}}), fp16, coopmat, coopmat2, f16acc);
-        string_to_spv(shader_name + "_e4m3_aligned", source_name, merge_maps(merge_maps(base_dict, float_type_dict_e4m3), {{"DATA_A_E4M3", "1"}, {"LOAD_VEC_A", "4"}, {"LOAD_VEC_B", "4"}, {"B_TYPE", "f16vec4"}, {"D_TYPE", "float"}, {"ALIGNED", "1"}}), fp16, coopmat, coopmat2, f16acc);
+        // LOAD_VEC_A=4 matches the q8_0 block addressing the e4m3 load mirrors (idx/8, 4 vals/idx).
+        string_to_spv(shader_name + "_e4m3",         source_name, merge_maps(merge_maps(base_dict, float_type_dict_f16), {{"DATA_A_E4M3", "1"}, {"LOAD_VEC_A", "4"},                          {"B_TYPE", "float16_t"},        {"D_TYPE", "float"}}), fp16, coopmat, coopmat2, f16acc);
+        string_to_spv(shader_name + "_e4m3_aligned", source_name, merge_maps(merge_maps(base_dict, float_type_dict_f16), {{"DATA_A_E4M3", "1"}, {"LOAD_VEC_A", "4"}, {"LOAD_VEC_B", load_vec}, {"B_TYPE", aligned_b_type_f16}, {"D_TYPE", "float"}, {"ALIGNED", "1"}}), fp16, coopmat, coopmat2, f16acc);
     }
 
     // bf16

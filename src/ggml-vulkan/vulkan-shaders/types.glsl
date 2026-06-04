@@ -34,17 +34,24 @@
 #define A_TYPE_PACKED32 f16vec2
 #endif
 
+// scaled e4m3: per-row fp16 scale `d` (replicated per block) + raw e4m3 quants.
+// Layout mirrors block_q8_0 (f16 d + 32 single-byte quants); the load dequantizes
+// d * e4m3_decode(qs) -> f16 in shared (software decode, no fp8 extension needed).
+struct block_e4m3
+{
+    float16_t d;
+    uint8_t qs[32];
+};
+struct block_e4m3_packed16
+{
+    float16_t d;
+    uint16_t qs[16];
+};
 #if defined(DATA_A_E4M3)
-#define QUANT_K 1
+#define QUANT_K 32
 #define QUANT_R 1
-
-#if LOAD_VEC_A == 4
-#define A_TYPE fe4m3vec4
-#elif LOAD_VEC_A == 8
-#error unsupported
-#else
-#define A_TYPE floate4m3_t
-#endif
+#define A_TYPE block_e4m3
+#define A_TYPE_PACKED16 block_e4m3_packed16
 #endif
 
 #if defined(DATA_A_BF16)

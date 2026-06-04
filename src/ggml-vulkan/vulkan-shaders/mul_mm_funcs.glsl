@@ -1,5 +1,23 @@
+#if defined(DATA_A_E4M3)
+// decode an e4m3 (OCP e4m3fn) byte to float: 1 sign, 4 exp (bias 7), 3 mantissa.
+float e4m3_decode(uint b) {
+    const uint s   = (b >> 7) & 0x1u;
+    const int  exp = int((b >> 3) & 0xFu);
+    const int  man = int(b & 0x7u);
+    float v;
+    if (exp == 0) {
+        v = float(man) * exp2(-9.0);                       // subnormal: man * 2^-9
+    } else if (exp == 0xF && man == 0x7) {
+        v = 0.0;                                           // e4m3fn NaN (weights won't hit this)
+    } else {
+        v = (1.0 + float(man) / 8.0) * exp2(float(exp - 7));
+    }
+    return (s != 0u) ? -v : v;
+}
+#endif
+
 void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uint idx_m, const uint block, const uint end_k) {
-#if defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_E4M3)
+#if defined(DATA_A_F32) || defined(DATA_A_F16)
 #if LOAD_VEC_A == 8
             const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
             const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;
@@ -127,6 +145,23 @@ void load_a_to_shmem(const uint pos_a, const uint row, const uint col, const uin
             const i8vec2 v0 = unpack8(int32_t(data_a_packed16[ib].qs[2*iqs])).xy; // vec4 used due to #12147
             const i8vec2 v1 = unpack8(int32_t(data_a_packed16[ib].qs[2*iqs + 1])).xy;
             const vec4 v = vec4(v0.x, v0.y, v1.x, v1.y) * d;
+
+            buf_a[buf_idx    ] = FLOAT_TYPEV2(v.xy);
+            buf_a[buf_idx + 1] = FLOAT_TYPEV2(v.zw);
+#elif defined(DATA_A_E4M3)
+            const uint idx = pos_a + col * p.stride_a / LOAD_VEC_A + row;
+            const uint buf_idx = col * SHMEM_STRIDE + row * LOAD_VEC_A / 2;
+
+            const uint ib = idx / 8;
+            const uint iqs = idx & 0x07;
+
+            const float d = float(data_a_packed16[ib].d);
+            const uint w0 = uint(data_a_packed16[ib].qs[2*iqs]);
+            const uint w1 = uint(data_a_packed16[ib].qs[2*iqs + 1]);
+            const vec4 v = vec4(e4m3_decode( w0        & 0xFFu),
+                                e4m3_decode((w0 >> 8)  & 0xFFu),
+                                e4m3_decode( w1        & 0xFFu),
+                                e4m3_decode((w1 >> 8)  & 0xFFu)) * d;
 
             buf_a[buf_idx    ] = FLOAT_TYPEV2(v.xy);
             buf_a[buf_idx + 1] = FLOAT_TYPEV2(v.zw);
