@@ -465,6 +465,18 @@ ggml_bf16_t ggml_fp32_to_bf16(float x) {
     return GGML_FP32_TO_BF16(x);
 }
 
+void ggml_e4m3_to_fp32_row(const uint8_t * x, float * y, int64_t n) {
+    for (int64_t i = 0; i < n; i++) {
+        y[i] = ggml_e4m3_to_fp32(x[i]);
+    }
+}
+
+void ggml_fp32_to_e4m3_row(const float * x, uint8_t * y, int64_t n) {
+    for (int64_t i = 0; i < n; i++) {
+        y[i] = ggml_fp32_to_e4m3(x[i]);
+    }
+}
+
 void ggml_fp16_to_fp32_row(const ggml_fp16_t * x, float * y, int64_t n) {
     for (int64_t i = 0; i < n; i++) {
         y[i] = GGML_FP16_TO_FP32(x[i]);
@@ -673,6 +685,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .is_quantized             = true,
         .to_float                 = (ggml_to_float_t) dequantize_row_q1_0,
         .from_float_ref           = (ggml_from_float_t) quantize_row_q1_0_ref,
+    },
+    [GGML_TYPE_E4M3] = {
+        .type_name                = "e4m3",
+        .blck_size                = 1,
+        .type_size                = sizeof(uint8_t),
+        .is_quantized             = false,
+        .to_float                 = (ggml_to_float_t) ggml_e4m3_to_fp32_row,
+        .from_float_ref           = (ggml_from_float_t) ggml_fp32_to_e4m3_row,
     },
     [GGML_TYPE_Q4_0] = {
         .type_name                = "q4_0",
