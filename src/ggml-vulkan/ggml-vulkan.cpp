@@ -3446,6 +3446,7 @@ static bool ggml_vk_matmul_int_shmem_support(const vk_device& device, const std:
 
     uint32_t block_a_size = 0;
     switch (src0_type) {
+        case GGML_TYPE_E4M3:    block_a_size = 32;                                                            break; // 32 fp8 bytes (f16-style path, 1 byte/elem)
         case GGML_TYPE_Q4_0:    block_a_size = std430_size({{16, 4}, {fp_size,  fp_align}});                  break; // qs[16/4] + dm
         case GGML_TYPE_Q4_1:    block_a_size = std430_size({{16, 4}, {fp2_size, fp2_align}});                 break; // qs[16/4] + dm(vec2)
         case GGML_TYPE_Q5_0:    block_a_size = std430_size({{16, 4}, {4, 4}, {fp_size,  fp_align}});          break; // qs[16/4] + qh + dm
@@ -4049,6 +4050,10 @@ static void ggml_vk_load_shaders(vk_device& device) {
         CREATE_MM(GGML_TYPE_F32, pipeline_matmul_f32_f16, matmul_f32_f16, , wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
         CREATE_MM2(GGML_TYPE_F16, pipeline_matmul_f16, matmul_f16, wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
         CREATE_MM2(GGML_TYPE_F16, pipeline_matmul_f16_f32, matmul_f16_f32, wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
+        // fp8 e4m3 (native fp8 weights + f16 activation, fp8 coopmat WMMA, f32 acc) — RDNA4 only
+        if (device->architecture == vk_device_architecture::AMD_RDNA4) {
+            CREATE_MM(GGML_TYPE_E4M3, pipeline_dequant_mul_mat_mat_f16[GGML_TYPE_E4M3].f32acc, matmul_e4m3, , wg_denoms, warptile, vk_mat_mat_push_constants, 3, );
+        }
 #if defined(GGML_VULKAN_BFLOAT16_GLSLC_SUPPORT)
         if (device->coopmat_bf16_support) {
             CREATE_MM(GGML_TYPE_BF16, pipeline_matmul_bf16, matmul_bf16, , wg_denoms, warptile, vk_mat_mat_push_constants, 3, )
@@ -6624,6 +6629,10 @@ static vk_matmul_pipeline ggml_vk_get_mul_mat_mat_pipeline(ggml_backend_vk_conte
     }
     if (src0_type == GGML_TYPE_BF16 && src1_type == GGML_TYPE_BF16) {
         return ctx->device->pipeline_matmul_bf16;
+    }
+    if (src0_type == GGML_TYPE_E4M3) {
+        // native fp8 weights, f16 activation (converted in-staging), fp8 coopmat, f32 acc
+        return ctx->device->pipeline_dequant_mul_mat_mat_f16[GGML_TYPE_E4M3].f32acc;
     }
     if (prec == GGML_PREC_DEFAULT && ctx->device->fp16 && !(ctx->device->coopmat_support && !ctx->device->coopmat_acc_f16_support)) {
         if (src0_type == GGML_TYPE_F16 && src1_type == GGML_TYPE_F32) {
@@ -16332,6 +16341,12 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     }
                 }
                 switch (src0_type) {
+                    case GGML_TYPE_E4M3:
+                        // fp8 e4m3 matmul is RDNA4-only (fp8 coopmat WMMA)
+                        if (device->architecture != vk_device_architecture::AMD_RDNA4) {
+                            return false;
+                        }
+                        break;
                     case GGML_TYPE_F32:
                     case GGML_TYPE_F16:
                     case GGML_TYPE_BF16:
